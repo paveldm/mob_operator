@@ -6,11 +6,15 @@ import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.GridPane;
 import javafx.stage.Stage;
+import javafx.application.Platform;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Random;
+import java.util.*;
+
+import javafx.scene.control.Alert;
+import javafx.scene.control.ButtonBar;
+import javafx.scene.control.ButtonType;
 
 import java.sql.*;
 
@@ -21,6 +25,9 @@ public class HelloApplication extends Application {
     private Stage primaryStage;
     private Label userLabel;
     private ListView<String> userList;
+    private Label dataUsageDetailsLabel;
+    private Button stopDataUsageButton;
+
 
     @Override
     public void start(Stage primaryStage) {
@@ -46,6 +53,9 @@ public class HelloApplication extends Application {
         Button registerButton = new Button("Зарегистрироваться");
         registerButton.setOnAction(e -> {
             registerUser(firstNameField.getText(), lastNameField.getText(), addressArea.getText(), contactInfoField.getText());
+            List<String> updatedUsers = getUsers();
+            userList.getItems().clear();
+            userList.getItems().addAll(updatedUsers);
             primaryStage.close();
             showMainApplication(firstNameField.getText(), lastNameField.getText());
         });
@@ -171,11 +181,89 @@ public class HelloApplication extends Application {
             mainStage.close(); // Закрыть главный экран
             primaryStage.show(); // Показать стартовое окно
         });
+        Button deleteButton = new Button("Удалить пользователя");
+        deleteButton.setOnAction(e -> {
+            String selectedUser = userList.getSelectionModel().getSelectedItem();
+            if (selectedUser != null) {
+                String[] nameParts = selectedUser.split(" ");
+                String firstNameToDelete = nameParts[0];
+                String lastNameToDelete = nameParts[1];
+                deleteUser(firstNameToDelete, lastNameToDelete);
+
+                // Обновление списка пользователей в окне "User Registration"
+                List updatedUsers = getUsers();
+                userList.getItems().clear();
+                userList.getItems().addAll(updatedUsers);
+            }
+        });
+        grid.add(deleteButton, 1, 4);
         grid.add(backButton, 1, 5);
         mainStage.setScene(scene);
         mainStage.show();
     }
+    private String showDeleteConfirmation() {
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle("Confirmation Dialog");
+        alert.setHeaderText("Удаление пользователя");
+        alert.setContentText("Вы уверены, что хотите удалить этого пользователя и все связанные с ним записи?");
 
+        ButtonType okButton = new ButtonType("OK", ButtonBar.ButtonData.OK_DONE);
+        ButtonType cancelButton = new ButtonType("Отмена", ButtonBar.ButtonData.CANCEL_CLOSE);
+
+        alert.getButtonTypes().setAll(okButton, cancelButton);
+
+        Optional<ButtonType> result = alert.showAndWait();
+        return result.map(buttonType -> buttonType.getText()).orElse("Отмена");
+    }
+    private void deleteUser(String firstName, String lastName) {
+        try (Connection connection = DriverManager.getConnection(JDBC_URL, JDBC_USERNAME, JDBC_PASSWORD)) {
+            int userId = getUserId(firstName, lastName);
+
+            // Delete from Data_Usage table
+            String deleteDataUsageQuery = "DELETE FROM Data_Usage WHERE ContractID IN " +
+                    "(SELECT ContractID FROM SubscriptionContracts WHERE UserID = ?)";
+            try (PreparedStatement deleteDataUsageStatement = connection.prepareStatement(deleteDataUsageQuery)) {
+                deleteDataUsageStatement.setInt(1, userId);
+                deleteDataUsageStatement.executeUpdate();
+            }
+
+            // Delete from Payments table
+            String deletePaymentsQuery = "DELETE FROM Payments WHERE ContractID IN " +
+                    "(SELECT ContractID FROM SubscriptionContracts WHERE UserID = ?)";
+            try (PreparedStatement deletePaymentsStatement = connection.prepareStatement(deletePaymentsQuery)) {
+                deletePaymentsStatement.setInt(1, userId);
+                deletePaymentsStatement.executeUpdate();
+            }
+
+            // Delete from SIM_Cards table
+            String deleteSimCardsQuery = "DELETE FROM SIM_Cards WHERE ContractID IN " +
+                    "(SELECT ContractID FROM SubscriptionContracts WHERE UserID = ?)";
+            try (PreparedStatement deleteSimCardsStatement = connection.prepareStatement(deleteSimCardsQuery)) {
+                deleteSimCardsStatement.setInt(1, userId);
+                deleteSimCardsStatement.executeUpdate();
+            }
+
+            // Delete from SubscriptionContracts table
+            String deleteContractsQuery = "DELETE FROM SubscriptionContracts WHERE UserID = ?";
+            try (PreparedStatement deleteContractsStatement = connection.prepareStatement(deleteContractsQuery)) {
+                deleteContractsStatement.setInt(1, userId);
+                deleteContractsStatement.executeUpdate();
+            }
+
+            // Delete from Users table
+            String deleteUserQuery = "DELETE FROM Users WHERE UserID = ?";
+            try (PreparedStatement deleteUserStatement = connection.prepareStatement(deleteUserQuery)) {
+                deleteUserStatement.setInt(1, userId);
+                deleteUserStatement.executeUpdate();
+                System.out.println("User and related records deleted successfully!");
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+    private Timer dataUsageTimer; // Переменная для хранения таймера обновления DataVolume
+    private double dataVolumeValue = 0.0; // Исходное значение DataVolume
     private void showContractDetails(int contractId) {
         int planId = getPlanIDByContractID(contractId);
         if (planId == 10) {
@@ -223,7 +311,20 @@ public class HelloApplication extends Application {
             Label simCardDetailsLabel = new Label(contractDetails[1]); // Assuming contractDetails[1] contains the SIM card details
             Label dataUsageLabel = new Label("Data Usage:");
             Label dataUsageDetailsLabel = new Label(contractDetails[2]); // Assuming contractDetails[3] contains the data usage details
+            Button payButton = new Button("Оплатить тариф");
+            payButton.setOnAction(e -> {
+                payTariff(contractId);
+            });
+            Button startDataUsageButton = new Button("Начать использование данных");
+            startDataUsageButton.setOnAction(e -> startDataUsageTimer(contractId));
+            contractDetailsGrid.add(startDataUsageButton, 0, 4);
+            // Initialize stopDataUsageButton
+            stopDataUsageButton = new Button("Стоп");
+            stopDataUsageButton.setOnAction(e -> stopDataUsageTimer());
 
+            // Add the stopDataUsageButton to the grid
+            contractDetailsGrid.add(stopDataUsageButton, 1, 4);
+            contractDetailsGrid.add(payButton, 0, 3);
             contractDetailsGrid.add(planLabel, 0, 0);
             contractDetailsGrid.add(planDetailsLabel, 1, 0);
             contractDetailsGrid.add(simCardLabel, 0, 1);
@@ -235,6 +336,89 @@ public class HelloApplication extends Application {
             contractDetailsStage.setScene(contractDetailsScene);
             contractDetailsStage.show();
         }
+    }
+    private void startDataUsageTimer(int contractId) {
+        if (dataUsageTimer == null) {
+            dataUsageTimer = new Timer(true);
+            dataUsageTimer.scheduleAtFixedRate(new TimerTask() {
+                @Override
+                public void run() {
+                    updateDataUsage(contractId);
+                }
+            }, 0, 1000); // Обновление каждую секунду
+        }
+
+        // Initialize dataUsageDetailsLabel here
+        dataUsageDetailsLabel = new Label();
+    }
+    private void stopDataUsageTimer() {
+        if (dataUsageTimer != null) {
+            dataUsageTimer.cancel();
+            dataUsageTimer.purge();
+            dataUsageTimer = null;
+        }
+    }
+    private void updateDataUsage(int contractId) {
+        // Обновление значения в окне
+        dataVolumeValue += Math.random() * 9.99 + 1.01;
+        Platform.runLater(() -> {
+            dataUsageDetailsLabel.setText(String.format("%.2f MB", dataVolumeValue));
+        });
+
+        // Обновление значения в базе данных
+        try (Connection connection = DriverManager.getConnection(JDBC_URL, JDBC_USERNAME, JDBC_PASSWORD)) {
+            String updateQuery = "UPDATE Data_Usage SET DataVolume = ? WHERE ContractID = ?";
+            try (PreparedStatement updateStatement = connection.prepareStatement(updateQuery)) {
+                updateStatement.setDouble(1, dataVolumeValue);
+                updateStatement.setInt(2, contractId);
+                updateStatement.executeUpdate();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void payTariff(int contractId) {
+        try (Connection connection = DriverManager.getConnection(JDBC_URL, JDBC_USERNAME, JDBC_PASSWORD)) {
+            // Получение информации о текущей сим-карте
+            String simCardStatus = getSimCardStatus(contractId);
+
+            // Проверка статуса активации сим-карты
+            if (simCardStatus.equals("not_activated")) {
+                // Выполнение оплаты тарифа
+                // Здесь можно добавить соответствующий код для оплаты тарифа
+                String updateQuery = "UPDATE SIM_Cards SET ActivationStatus = 'activated' WHERE ContractID = ?";
+                try (PreparedStatement updateStatement = connection.prepareStatement(updateQuery)) {
+                    updateStatement.setInt(1, contractId);
+                    updateStatement.executeUpdate();
+                    System.out.println("Тариф оплачен успешно!");
+
+                    // Обновление информации о контракте после оплаты тарифа
+                    showContractDetails(contractId);
+                }
+            } else {
+                System.out.println("Сим-карта уже активирована!");
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+    private String getSimCardStatus(int contractId) {
+        String simCardStatus = "";
+        try (Connection connection = DriverManager.getConnection(JDBC_URL, JDBC_USERNAME, JDBC_PASSWORD)) {
+            String query = "SELECT ActivationStatus FROM SIM_Cards WHERE ContractID = ?";
+            try (PreparedStatement statement = connection.prepareStatement(query)) {
+                statement.setInt(1, contractId);
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (resultSet.next()) {
+                        simCardStatus = resultSet.getString("ActivationStatus");
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return simCardStatus;
     }
     private int getPlanIdByName(String planName) {
         int planId = 0;
@@ -306,7 +490,7 @@ public class HelloApplication extends Application {
                     if (resultSet.next()) {
                         details[0] = resultSet.getString("PlanName") + ": " + resultSet.getString("PlanServices");
                         details[1] = resultSet.getString("SimCardNumber") + " (" + resultSet.getString("SimCardStatus") + ")";
-                        details[2] = resultSet.getBigDecimal("DataUsageVolume") + " GB";
+                        details[2] = resultSet.getBigDecimal("DataUsageVolume") + " MB";
                     }
                 }
             }
