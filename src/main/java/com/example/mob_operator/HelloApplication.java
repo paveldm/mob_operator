@@ -114,7 +114,7 @@ public class HelloApplication extends Application {
     private void showMainApplication(String firstName, String lastName) {
         primaryStage.close();
         Stage mainStage = new Stage();
-        mainStage.setTitle("Main Application");
+        mainStage.setTitle("Данные пользователя");
         GridPane grid = new GridPane();
         grid.setPadding(new Insets(20, 20, 20, 20));
         grid.setVgap(5);
@@ -160,10 +160,47 @@ public class HelloApplication extends Application {
                 userList.getItems().addAll(updatedUsers);
             }
         });
+        Button addSimCardButton = new Button("Добавить сим-карту");
+        addSimCardButton.setOnAction(e -> {
+            int userId = getUserId(firstName, lastName);
+            addSimCard(userId);
+            List updatedContracts = getUserContracts(firstName, lastName);
+            contractList.getItems().clear();
+            contractList.getItems().addAll(updatedContracts);
+        });
+        GridPane.setMargin(addSimCardButton, new Insets(0, 0, 0, 200));
+        grid.add(addSimCardButton, 1, 4);
         grid.add(deleteButton, 1, 4);
         grid.add(backButton, 1, 5);
         mainStage.setScene(scene);
         mainStage.show();
+    }
+    private void addSimCard(int userId) {
+        try (Connection connection = DriverManager.getConnection(JDBC_URL, JDBC_USERNAME, JDBC_PASSWORD)) {
+            String insertQuery = "INSERT INTO SubscriptionContracts (UserID, PlanID, PlanType, StartDate, EndDate, Status) " +
+                    "VALUES (?, ?, ?, ?, ?, ?)";
+            try (PreparedStatement insertStatement = connection.prepareStatement(insertQuery, Statement.RETURN_GENERATED_KEYS)) {
+                // В данном примере я просто добавляю симкарту с тарифом по умолчанию и статусом "Активен"
+                // Вы можете настроить это в соответствии с вашими требованиями
+                insertStatement.setInt(1, userId);
+                insertStatement.setInt(2, 10); // Замените на ваш метод получения ID тарифа по умолчанию
+                insertStatement.setString(3, "prepaid"); // Замените на ваш тип тарифа по умолчанию
+                insertStatement.setDate(4, java.sql.Date.valueOf(java.time.LocalDate.now()));
+                insertStatement.setDate(5, java.sql.Date.valueOf(java.time.LocalDate.now().plusMonths(1))); // Например, на месяц вперед
+                insertStatement.setString(6, "active");
+
+                int affectedRows = insertStatement.executeUpdate();
+                if (affectedRows > 0) {
+                    ResultSet generatedKeys = insertStatement.getGeneratedKeys();
+                    if (generatedKeys.next()) {
+                        int contractId = generatedKeys.getInt(1);
+                        System.out.println("Симкарта успешно добавлена с ContractID: " + contractId);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
     }
     private void deleteUser(String firstName, String lastName) {
         try (Connection connection = DriverManager.getConnection(JDBC_URL, JDBC_USERNAME, JDBC_PASSWORD)) {
@@ -230,7 +267,7 @@ public class HelloApplication extends Application {
         }
         else {
             Stage contractDetailsStage = new Stage();
-            contractDetailsStage.setTitle("Contract Details");
+            contractDetailsStage.setTitle("Данные о контракте");
             GridPane contractDetailsGrid = new GridPane();
             contractDetailsGrid.setPadding(new Insets(20, 20, 20, 20));
             contractDetailsGrid.setVgap(5);
@@ -311,15 +348,24 @@ public class HelloApplication extends Application {
                 try (PreparedStatement updateStatement = connection.prepareStatement(updateQuery)) {
                     updateStatement.setInt(1, contractId);
                     updateStatement.executeUpdate();
-                    System.out.println("Тариф оплачен успешно!");
+                    showAlert("Тариф оплачен успешно!", Alert.AlertType.INFORMATION);
                     showContractDetails(contractId);
                 }
             } else {
-                System.out.println("Сим-карта уже активирована!");
+                showAlert("Сим-карта уже активирована!", Alert.AlertType.INFORMATION);
             }
         } catch (SQLException e) {
             e.printStackTrace();
         }
+    }
+    private void showAlert(String message, Alert.AlertType alertType) {
+        Platform.runLater(() -> {
+            Alert alert = new Alert(alertType);
+            alert.setTitle("Уведомление");
+            alert.setHeaderText(null);
+            alert.setContentText(message);
+            alert.showAndWait();
+        });
     }
     private String getSimCardStatus(int contractId) {
         String simCardStatus = "";
